@@ -99,9 +99,11 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       // For now, use minimal context
       final context = ""; // Empty context for initial testing
 
-      // Unique chat format to prevent KV cache contamination hallucinations
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final prompt = 'Q$timestamp: $content\nA:';
+      // Smart limit: determine appropriate token limit based on question complexity
+      final tokenLimit = _getSmartTokenLimit(content);
+      
+      // Clean prompt format to prevent contamination and improve quality
+      final prompt = 'User: $content\nAssistant: Respond in plain text without markdown formatting.';
 
       // Create streaming AI message that we'll update as tokens arrive
       final aiMessageId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -123,6 +125,7 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       
       await llmService.generateResponseStreaming(
         prompt,
+        maxTokens: tokenLimit, // Pass smart token limit
         (String token) {
           // Called for each token as it arrives
           accumulatedResponse += token;
@@ -153,7 +156,7 @@ class ChatNotifier extends StateNotifier<List<Message>> {
           
           // Save the final message
           _saveMessage(finalMessage);
-        }
+        },
       );
       
     } catch (e) {
@@ -175,6 +178,44 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       // Reset processing flag
       _isProcessing = false;
     }
+  }
+
+  /// Smart token limit based on question complexity
+  /// Provides appropriate response lengths for different question types
+  int _getSmartTokenLimit(String question) {
+    final lowerQuestion = question.toLowerCase();
+    final wordCount = question.split(' ').length;
+    final charCount = question.length;
+    
+    // Quick facts: short questions asking for definitions or basic info
+    if ((charCount < 50 && wordCount <= 8) ||
+        lowerQuestion.startsWith('what is') ||
+        lowerQuestion.startsWith('who is') ||
+        lowerQuestion.startsWith('define') ||
+        lowerQuestion.contains('?') && wordCount <= 10) {
+      return 128; // Quick answer - 2-3 seconds
+    }
+    
+    // Explanations: questions asking for detailed understanding
+    if (lowerQuestion.startsWith('explain') ||
+        lowerQuestion.startsWith('how does') ||
+        lowerQuestion.startsWith('why does') ||
+        lowerQuestion.startsWith('describe') ||
+        wordCount > 10 && wordCount <= 25) {
+      return 200; // Balanced explanation - 4-5 seconds
+    }
+    
+    // Complex queries: longer questions requiring detailed analysis
+    if (wordCount > 25 ||
+        lowerQuestion.contains('analyze') ||
+        lowerQuestion.contains('compare') ||
+        lowerQuestion.contains('pros and cons') ||
+        lowerQuestion.contains('advantages')) {
+      return 256; // Detailed response - 5-6 seconds
+    }
+    
+    // Default: moderate response for typical questions
+    return 180; // Default reasonable length - 3-4 seconds
   }
 
   // Clear all messages

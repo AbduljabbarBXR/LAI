@@ -47,3 +47,12 @@ app.*.map.json
 # Large model files (GGUF models)
 /assets/models/*.gguf
 /*.gguf
+
+# Documentation files (keep README files only)
+/*_REPORT.md
+/*_AUDIT.md  
+/*_ISSUES.md
+/*_FIXES.md
+/*_ROADMAP.md
+/*_ERROR_FIXED.md
+/*SMART_*.md

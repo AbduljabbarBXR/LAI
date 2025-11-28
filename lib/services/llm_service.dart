@@ -98,8 +98,9 @@ class LlmService {
   Future<void> generateResponseStreaming(
     String prompt,
     StreamingCallback onToken,
-    StreamingCompleteCallback onComplete
-  ) async {
+    StreamingCompleteCallback onComplete, {
+    int maxTokens = 200, // Smart limit parameter
+  }) async {
     if (!_modelLoaded) {
       await initialize();
       if (!_modelLoaded) {
@@ -116,31 +117,8 @@ class LlmService {
     _isStreaming = true;
     
     try {
-      // For now, use the regular generateResponse and simulate streaming
-      // This is a temporary solution until we fix the native streaming
-      final response = await _plugin.generateResponse(prompt);
-      
-      // Simulate streaming by sending tokens one by one
-      final parts = response.split('|');
-      final mainResponse = parts.isNotEmpty ? parts[0] : response;
-      final aiThoughts = parts.length > 1 && parts[1].isNotEmpty ? parts[1] : null;
-      
-      // Split response into words and send them as "tokens"
-      final words = mainResponse.split(' ');
-      String accumulatedResponse = '';
-      
-      for (int i = 0; i < words.length; i++) {
-        final word = words[i];
-        final token = i == 0 ? word : ' $word';
-        accumulatedResponse += token;
-        
-        onToken(token);
-        
-        // Small delay to simulate streaming
-        await Future.delayed(Duration(milliseconds: 50));
-      }
-      
-      onComplete(response);
+      // Use real streaming implementation with smart token limits
+      await _plugin.generateResponseStreaming(prompt, onToken, onComplete, maxTokens: maxTokens);
       
     } catch (e) {
       print('Error in streaming generation: $e');

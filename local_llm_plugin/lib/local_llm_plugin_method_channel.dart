@@ -9,9 +9,39 @@ class MethodChannelLocalLlmPlugin extends LocalLlmPluginPlatform {
   @visibleForTesting
   final methodChannel = const MethodChannel('local_llm_plugin');
 
+  // Handler for streaming callbacks - must be managed properly
+  Future<dynamic> Function(MethodCall)? _streamingHandler;
+  
   /// Event channel for receiving streaming tokens
   @visibleForTesting
   final eventChannel = const EventChannel('local_llm_plugin_stream');
+  
+  MethodChannelLocalLlmPlugin() {
+    // Set wrapper handler that delegates to active handler
+    methodChannel.setMethodCallHandler(_wrapperHandler);
+  }
+
+  /// Default method call handler for streaming messages
+  Future<dynamic> _handleMethodCall(MethodCall call) async {
+    // Default implementation returns null for unimplemented methods
+    return null;
+  }
+  
+  /// Clean up streaming handler - call when streaming is done
+  void _cleanupStreamingHandler() {
+    _streamingHandler = null;
+  }
+  
+  /// Wrapper handler that delegates to active handler or default
+  Future<dynamic> _wrapperHandler(MethodCall call) async {
+    if (_streamingHandler != null) {
+      // Delegate to streaming handler if active
+      return await _streamingHandler!(call);
+    } else {
+      // Use default handler for other methods
+      return await _handleMethodCall(call);
+    }
+  }
 
   @override
   Future<String?> getPlatformVersion() async {
@@ -41,29 +71,31 @@ class MethodChannelLocalLlmPlugin extends LocalLlmPluginPlatform {
   Future<void> generateResponseStreaming(
     String prompt, 
     StreamingCallback onToken,
-    StreamingCompleteCallback onComplete
-  ) async {
-    // Listen to event channel for streaming data
-    eventChannel.receiveBroadcastStream().listen(
-      (dynamic event) {
-        final Map<String, dynamic> data = event as Map<String, dynamic>;
-        final String eventType = data['type'] as String;
-        
-        if (eventType == 'token') {
-          final String token = data['token'] as String;
-          onToken(token);
-        } else if (eventType == 'complete') {
-          final String fullResponse = data['response'] as String;
-          onComplete(fullResponse);
-        }
-      },
-      onError: (dynamic error) {
-        print('Streaming error: $error');
+    StreamingCompleteCallback onComplete, {
+    int maxTokens = 200, // Smart limit parameter
+  }) async {
+    // CRITICAL FIX: Set streaming handler (wrapper will delegate to it)
+    _streamingHandler = (MethodCall call) async {
+      if (call.method == 'streaming_token') {
+        final String token = call.arguments as String;
+        onToken(token);
+      } else if (call.method == 'streaming_complete') {
+        final String fullResponse = call.arguments as String;
+        onComplete(fullResponse);
+        // CRITICAL FIX: Clean up handler after streaming completes
+        _cleanupStreamingHandler();
+      } else if (call.method == 'streaming_error') {
+        final String error = call.arguments as String;
         onComplete('Error: $error');
-      },
-    );
-
-    // Start streaming on native side
-    await methodChannel.invokeMethod<void>('generateResponseStreaming', {'prompt': prompt});
+        // CRITICAL FIX: Clean up handler after error
+        _cleanupStreamingHandler();
+      }
+    };
+    
+    // Start streaming on native side - wrapper handler will handle the delegation
+    await methodChannel.invokeMethod<void>('generateResponseStreaming', {
+      'prompt': prompt,
+      'maxTokens': maxTokens, // Pass smart token limit to native
+    });
   }
 }

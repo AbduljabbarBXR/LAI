@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:local_ai_app/models/message.dart';
+import 'package:local_ai_app/widgets/animated_dots.dart';
 
 class ChatBubble extends StatefulWidget {
   final Message message;
@@ -45,14 +46,38 @@ class _ChatBubbleState extends State<ChatBubble> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              message.content,
-              style: TextStyle(
-                color: Colors.grey[900],
-                fontSize: 16,
-                height: 1.4,
+            // Show animated dots when AI message is empty (streaming)
+            if (message.sender == 'ai' && message.content.isEmpty)
+              Row(
+                children: [
+                  Icon(
+                    Icons.auto_awesome, 
+                    color: Colors.grey[600], 
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  const AnimatedDots(),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Thinking...',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 16,
+                      height: 1.4,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              )
+            else
+              Text(
+                message.content,
+                style: TextStyle(
+                  color: Colors.grey[900],
+                  fontSize: 16,
+                  height: 1.4,
+                ),
               ),
-            ),
             if (message.source == 'Cloud')
               Padding(
                 padding: const EdgeInsets.only(top: 8),

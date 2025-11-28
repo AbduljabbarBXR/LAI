@@ -5,6 +5,8 @@
 #include <string>
 #include <unistd.h>
 #include <algorithm>
+#include <thread>
+#include <atomic>
 #include "llama.h"
 #include "common.h"
 
@@ -35,6 +37,14 @@ static llama_context *context = nullptr;
 static llama_sampler *sampler = nullptr;
 static llama_batch batch = {0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 static std::string cached_token_chars;
+
+// Global variables for streaming callbacks
+static JavaVM* g_vm = nullptr;
+static jobject g_callback_object = nullptr;
+static jmethodID g_send_token_method = nullptr;
+static jmethodID g_streaming_complete_method = nullptr;
+static std::atomic<bool> g_is_streaming{false};
+static std::atomic<int> g_current_token_limit{200}; // Default 200 tokens
 
 bool is_valid_utf8(const char * string) {
     if (!string) {
@@ -78,6 +88,52 @@ static void log_callback(ggml_log_level level, const char * fmt, void * data) {
     else if (level == GGML_LOG_LEVEL_INFO) __android_log_print(ANDROID_LOG_INFO, TAG, fmt, data);
     else if (level == GGML_LOG_LEVEL_WARN) __android_log_print(ANDROID_LOG_WARN, TAG, fmt, data);
     else __android_log_print(ANDROID_LOG_DEFAULT, TAG, fmt, data);
+}
+
+// JNI utility functions for callback management
+static void sendTokenToJava(const std::string& token) {
+    if (!g_vm || !g_callback_object || !g_send_token_method || !g_is_streaming.load()) {
+        return;
+    }
+    
+    JNIEnv* env;
+    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+        LOGe("Failed to attach to Java thread for token callback");
+        return;
+    }
+    
+    jstring jToken = env->NewStringUTF(token.c_str());
+    env->CallVoidMethod(g_callback_object, g_send_token_method, jToken);
+    env->DeleteLocalRef(jToken);
+    
+    // Detach if needed
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+}
+
+static void completeStreamingToJava(const std::string& fullResponse) {
+    if (!g_vm || !g_callback_object || !g_streaming_complete_method || !g_is_streaming.load()) {
+        return;
+    }
+    
+    JNIEnv* env;
+    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+        LOGe("Failed to attach to Java thread for completion callback");
+        return;
+    }
+    
+    jstring jResponse = env->NewStringUTF(fullResponse.c_str());
+    env->CallVoidMethod(g_callback_object, g_streaming_complete_method, jResponse);
+    env->DeleteLocalRef(jResponse);
+    
+    // Reset streaming flag
+    g_is_streaming.store(false);
+    
+    // Detach if needed
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
 }
 
 extern "C"
@@ -189,7 +245,7 @@ Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponse(JNIEnv *env,
     cached_token_chars.clear();
 
     const auto vocab = llama_model_get_vocab(model);
-    for (int i = 0; i < 50; i++) { // Generate reasonable amount
+    for (int i = 0; i < g_current_token_limit.load(); i++) { // Dynamic smart limit
         const auto new_token_id = llama_sampler_sample(sampler, context, batch.n_tokens - 1);
 
         if (llama_vocab_is_eog(vocab, new_token_id)) {
@@ -281,19 +337,52 @@ Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponse(JNIEnv *env,
     return env->NewStringUTF(combined_response.c_str());
 }
 
-// Streaming method with simplified approach - using return values instead of callback objects
+// Set up streaming callbacks
 extern "C"
-JNIEXPORT jstring JNICALL
-Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponseStreaming(JNIEnv *env, jobject, jstring prompt) {
-    LOGi("JNI generateResponseStreaming called");
+JNIEXPORT void JNICALL
+Java_com_example_local_1llm_1plugin_LocalLlmPlugin_setStreamingCallbacks(JNIEnv *env, jobject obj) {
+    LOGi("Setting up streaming callbacks");
+    
+    // Store JavaVM pointer for thread management
+    env->GetJavaVM(&g_vm);
+    
+    // Create global reference to callback object
+    g_callback_object = env->NewGlobalRef(obj);
+    
+    // Find callback methods
+    jclass callbackClass = env->GetObjectClass(obj);
+    g_send_token_method = env->GetMethodID(callbackClass, "onTokenReceived", "(Ljava/lang/String;)V");
+    g_streaming_complete_method = env->GetMethodID(callbackClass, "onStreamingComplete", "(Ljava/lang/String;)V");
+    
+    env->DeleteLocalRef(callbackClass);
+    
+    if (!g_send_token_method || !g_streaming_complete_method) {
+        LOGe("Failed to find streaming callback methods");
+    } else {
+        LOGi("Streaming callbacks successfully set up");
+    }
+}
+
+// True streaming generation with callbacks
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponseStreaming(JNIEnv *env, jobject, jstring prompt, jint maxTokens) {
+    // Set the token limit before starting generation
+    g_current_token_limit.store(maxTokens);
+    LOGi("Smart token limit set to: %d", maxTokens);
+    LOGi("JNI generateResponseStreaming called with callbacks");
     
     if (!model || !context || !sampler) {
         LOGe("Model not loaded");
-        return env->NewStringUTF("ERROR:Model not loaded");
+        completeStreamingToJava("Error: Model not loaded");
+        return;
     }
-
+    
+    // Set streaming flag
+    g_is_streaming.store(true);
+    
     const auto text = env->GetStringUTFChars(prompt, 0);
-    LOGi("Starting streaming generation for: %s", text);
+    LOGi("Starting true streaming generation for: %s", text);
 
     // Tokenize the prompt
     const auto tokens_list = common_tokenize(context, text, true, false);
@@ -312,15 +401,22 @@ Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponseStreaming(JNI
     if (llama_decode(context, batch) != 0) {
         LOGe("llama_decode() failed");
         env->ReleaseStringUTFChars(prompt, text);
-        return env->NewStringUTF("ERROR:Decode failed");
+        completeStreamingToJava("Error: Decode failed");
+        return;
     }
 
-    // Generate tokens and return them as a special format
+    // Generate tokens and stream them via callbacks
     const auto vocab = llama_model_get_vocab(model);
-    std::string streaming_response;
+    std::string full_response;
     cached_token_chars.clear();
 
-    for (int i = 0; i < 50; i++) { // Generate reasonable amount
+    for (int i = 0; i < g_current_token_limit.load(); i++) { // Dynamic smart limit
+        // Check if streaming was cancelled
+        if (!g_is_streaming.load()) {
+            LOGi("Streaming cancelled by user");
+            break;
+        }
+        
         const auto new_token_id = llama_sampler_sample(sampler, context, batch.n_tokens - 1);
 
         if (llama_vocab_is_eog(vocab, new_token_id)) {
@@ -331,10 +427,17 @@ Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponseStreaming(JNI
         auto new_token_chars = common_token_to_piece(context, new_token_id);
         cached_token_chars += new_token_chars;
 
-        // Send complete UTF-8 tokens
+        // Send complete UTF-8 tokens immediately via callback
         if (is_valid_utf8(cached_token_chars.c_str())) {
-            streaming_response += cached_token_chars;
+            std::string token_to_send = cached_token_chars;
+            full_response += token_to_send;
             cached_token_chars.clear();
+            
+            // Send token via callback (non-blocking)
+            sendTokenToJava(token_to_send);
+            
+            // Small delay for better UX (remove if performance is critical)
+            usleep(10000); // 10ms delay between tokens
         }
 
         // Add token to batch for next iteration
@@ -348,10 +451,34 @@ Java_com_example_local_1llm_1plugin_LocalLlmPlugin_generateResponseStreaming(JNI
     }
 
     env->ReleaseStringUTFChars(prompt, text);
-    LOGi("Streaming generation complete, length: %zu", streaming_response.length());
+    LOGi("True streaming generation complete, length: %zu", full_response.length());
     
-    // Return streaming response - Android side will handle the streaming
-    return env->NewStringUTF(("STREAM:" + streaming_response).c_str());
+    // Send complete response via callback
+    completeStreamingToJava(full_response);
+}
+
+// Cleanup streaming callbacks
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_local_1llm_1plugin_LocalLlmPlugin_cleanupStreamingCallbacks(JNIEnv *env, jobject) {
+    LOGi("Cleaning up streaming callbacks");
+    
+    g_is_streaming.store(false);
+    
+    if (g_callback_object) {
+        env->DeleteGlobalRef(g_callback_object);
+        g_callback_object = nullptr;
+    }
+    
+    g_send_token_method = nullptr;
+    g_streaming_complete_method = nullptr;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_local_1llm_1plugin_LocalLlmPluginKt_setTokenLimit(JNIEnv *env, jobject, jint limit) {
+    g_current_token_limit.store(limit);
+    LOGi("Token limit set to: %d", limit);
 }
 
 extern "C"
