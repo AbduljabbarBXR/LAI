@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:local_ai_app/widgets/chat_bubble.dart';
 import 'package:local_ai_app/providers/chat_provider.dart';
-import 'package:local_ai_app/models/message.dart';
+
 import 'package:uuid/uuid.dart';
 
 const uuid = Uuid();
@@ -37,8 +37,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         void sendMessage() {
           final text = inputController.text.trim();
           if (text.isNotEmpty && !isLoading) {
+            // Create loading controller for state management
+            final loadingController = StateController<bool>(true);
+            
             // Use the actual sendMessage method with LLM integration
-            ref.read(chatProvider.notifier).sendMessage(text);
+            ref.read(chatProvider.notifier).sendMessage(
+              text,
+              loadingController: loadingController,
+            );
             inputController.clear();
           }
         }
@@ -50,6 +56,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             foregroundColor: Colors.grey[900],
             elevation: 0,
             actions: [
+              if (isLoading)
+                Padding(
+                  padding: const EdgeInsets.only(right: 16.0),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.grey[600]!),
+                      ),
+                    ),
+                  ),
+                ),
               IconButton(
                 icon: Icon(Icons.settings, color: Colors.grey[700]),
                 onPressed: () => Scaffold.of(context).openDrawer(),
@@ -97,17 +117,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   textDirection: TextDirection.ltr,
                                   onSubmitted: (_) => sendMessage(),
                                   decoration: InputDecoration(
-                                    hintText: 'Message Local AI App...',
+                                    hintText: isLoading ? 'AI is thinking...' : 'Message Local AI App...',
                                     hintStyle: TextStyle(color: Colors.grey[500]),
                                     border: InputBorder.none,
                                     contentPadding: const EdgeInsets.symmetric(vertical: 12),
                                   ),
                                   maxLines: null,
                                   textInputAction: TextInputAction.newline,
+                                  enabled: !isLoading,
                                 ),
                               ),
                               IconButton(
-                                icon: Icon(Icons.send, color: Colors.grey[700], size: 20),
+                                icon: isLoading
+                                    ? SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.grey[400]!),
+                                        ),
+                                      )
+                                    : Icon(Icons.send, color: Colors.grey[700], size: 20),
                                 onPressed: isLoading ? null : sendMessage,
                                 constraints: const BoxConstraints(
                                   minWidth: 32,

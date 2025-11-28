@@ -14,10 +14,11 @@ class ChatNotifier extends StateNotifier<List<Message>> {
   final LlmService llmService;
   final AppDatabase database;
   String? conversationId;
+  final Ref _ref; // Add reference to access providers
 
   bool _isProcessing = false;
 
-  ChatNotifier(this.embeddingService, this.llmService, this.database, this.conversationId) : super([]) {
+  ChatNotifier(this.embeddingService, this.llmService, this.database, this.conversationId, this._ref) : super([]) {
     if (conversationId != null) {
       _loadMessages();
     }
@@ -89,18 +90,16 @@ class ChatNotifier extends StateNotifier<List<Message>> {
     state = [...state, userMessage];
     await _saveMessage(userMessage);
 
-    // Set loading state if controller provided
-    if (loadingController != null) {
-      loadingController.state = true;
-    }
+    // Set loading state for both global provider and controller
+    _ref.read(isLoadingProvider.notifier).state = true;
+    loadingController?.state = true;
 
     try {
       // TODO: Restore memory integration once database setup is complete
       // For now, use minimal context
-      final context = ""; // Empty context for initial testing
 
-      // Smart limit: determine appropriate token limit based on question complexity
-      final tokenLimit = _getSmartTokenLimit(content);
+      // PHASE 3: Let C++ handle question classification and token limits
+      // No need for Flutter-side token limit calculation
       
       // Clean prompt format to prevent contamination and improve quality
       final prompt = 'User: $content\nAssistant: Respond in plain text without markdown formatting.';
@@ -120,12 +119,11 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       state = [...state, streamingMessage];
       await _saveMessage(streamingMessage);
 
-      // Use streaming response
+      // Use streaming response - C++ handles classification
       String accumulatedResponse = '';
       
       await llmService.generateResponseStreaming(
         prompt,
-        maxTokens: tokenLimit, // Pass smart token limit
         (String token) {
           // Called for each token as it arrives
           accumulatedResponse += token;
@@ -138,7 +136,10 @@ class ChatNotifier extends StateNotifier<List<Message>> {
           ];
         },
         (String fullResponse) {
-          // Called when streaming is complete
+          // Called when streaming is complete - RESET LOADING STATE HERE
+          _ref.read(isLoadingProvider.notifier).state = false;
+          loadingController?.state = false;
+          
           final parts = fullResponse.split('|');
           final mainResponse = parts.isNotEmpty ? parts[0] : fullResponse;
           final aiThoughts = parts.length > 1 && parts[1].isNotEmpty ? parts[1] : null;
@@ -160,6 +161,10 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       );
       
     } catch (e) {
+      // Reset loading state on error
+      _ref.read(isLoadingProvider.notifier).state = false;
+      loadingController?.state = false;
+      
       // Add error message as AI response
       final errorMessage = Message(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -171,52 +176,14 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       );
       state = [...state, errorMessage];
     } finally {
-      // Clear loading state
-      if (loadingController != null) {
-        loadingController.state = false;
-      }
-      // Reset processing flag
+      // Reset processing flag (loading state is handled by completion callback)
       _isProcessing = false;
     }
   }
 
-  /// Smart token limit based on question complexity
-  /// Provides appropriate response lengths for different question types
-  int _getSmartTokenLimit(String question) {
-    final lowerQuestion = question.toLowerCase();
-    final wordCount = question.split(' ').length;
-    final charCount = question.length;
-    
-    // Quick facts: short questions asking for definitions or basic info
-    if ((charCount < 50 && wordCount <= 8) ||
-        lowerQuestion.startsWith('what is') ||
-        lowerQuestion.startsWith('who is') ||
-        lowerQuestion.startsWith('define') ||
-        lowerQuestion.contains('?') && wordCount <= 10) {
-      return 128; // Quick answer - 2-3 seconds
-    }
-    
-    // Explanations: questions asking for detailed understanding
-    if (lowerQuestion.startsWith('explain') ||
-        lowerQuestion.startsWith('how does') ||
-        lowerQuestion.startsWith('why does') ||
-        lowerQuestion.startsWith('describe') ||
-        wordCount > 10 && wordCount <= 25) {
-      return 200; // Balanced explanation - 4-5 seconds
-    }
-    
-    // Complex queries: longer questions requiring detailed analysis
-    if (wordCount > 25 ||
-        lowerQuestion.contains('analyze') ||
-        lowerQuestion.contains('compare') ||
-        lowerQuestion.contains('pros and cons') ||
-        lowerQuestion.contains('advantages')) {
-      return 256; // Detailed response - 5-6 seconds
-    }
-    
-    // Default: moderate response for typical questions
-    return 180; // Default reasonable length - 3-4 seconds
-  }
+  // PHASE 3: Removed _getSmartTokenLimit method
+  // Question classification now handled by C++ for better performance
+  // Token limits are calculated natively based on question type
 
   // Clear all messages
   void clearMessages() {
@@ -232,8 +199,8 @@ final chatProvider = StateNotifierProvider<ChatNotifier, List<Message>>((ref) {
   final llmService = ref.watch(llmServiceProvider);
   final database = ref.watch(sharedDatabaseProvider);
   final conversationId = ref.watch(selectedConversationIdProvider);
-  // Use the global embedding service instance
-  return ChatNotifier(embeddingService, llmService, database, conversationId);
+  // Use the global embedding service instance and pass ref for global state access
+  return ChatNotifier(embeddingService, llmService, database, conversationId, ref);
 });
 
 // Provider for the current user input

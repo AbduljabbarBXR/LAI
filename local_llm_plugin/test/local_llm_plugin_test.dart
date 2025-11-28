@@ -10,6 +10,27 @@ class MockLocalLlmPluginPlatform
 
   @override
   Future<String?> getPlatformVersion() => Future.value('42');
+
+  @override
+  Future<String> loadModel(String modelPath) => Future.value('Mock model loaded');
+
+  @override
+  Future<String> generateResponse(String prompt) => Future.value('Mock response');
+
+  @override
+  Future<String> freeModel() => Future.value('Mock model freed');
+
+  @override
+  Future<void> generateResponseStreaming(
+    String prompt,
+    void Function(String) onToken,
+    void Function(String) onComplete, {
+    int maxTokens = 200,
+  }) async {
+    // Mock streaming implementation
+    onToken('Mock token');
+    onComplete('Mock complete response');
+  }
 }
 
 void main() {

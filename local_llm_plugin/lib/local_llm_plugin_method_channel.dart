@@ -71,9 +71,9 @@ class MethodChannelLocalLlmPlugin extends LocalLlmPluginPlatform {
   Future<void> generateResponseStreaming(
     String prompt, 
     StreamingCallback onToken,
-    StreamingCompleteCallback onComplete, {
-    int maxTokens = 200, // Smart limit parameter
-  }) async {
+    StreamingCompleteCallback onComplete,
+    // PHASE 3: C++ handles classification - no maxTokens parameter
+  ) async {
     // CRITICAL FIX: Set streaming handler (wrapper will delegate to it)
     _streamingHandler = (MethodCall call) async {
       if (call.method == 'streaming_token') {
@@ -92,10 +92,10 @@ class MethodChannelLocalLlmPlugin extends LocalLlmPluginPlatform {
       }
     };
     
-    // Start streaming on native side - wrapper handler will handle the delegation
+    // Start streaming on native side - C++ handles classification and token limits
     await methodChannel.invokeMethod<void>('generateResponseStreaming', {
       'prompt': prompt,
-      'maxTokens': maxTokens, // Pass smart token limit to native
+      // No maxTokens - let C++ handle smart classification
     });
   }
 }

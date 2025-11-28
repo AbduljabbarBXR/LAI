@@ -7,10 +7,14 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import kotlinx.coroutines.*
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import android.os.Handler
 import android.os.Looper
 
-// External native methods for dynamic token limits
+// External native methods for dynamic token limits  
 external fun setTokenLimit(limit: Int)
 external fun generateResponseStreaming(prompt: String, maxTokens: Int)
 
@@ -24,10 +28,16 @@ class LocalLlmPlugin :
     // when the Flutter Engine is detached from the Activity
     private lateinit var channel: MethodChannel
     
-    // Background executor for native calls
-    private val executorService = Executors.newFixedThreadPool(4) { r ->
-        Thread(r, "LLM-Background-Thread").apply { isDaemon = true }
+    // OPTIMIZED: Single-thread executor to prevent thread overload on mobile devices
+    private val executorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "LLM-Optimized-Thread").apply { 
+            isDaemon = true
+            priority = Thread.NORM_PRIORITY - 1 // Lower priority to preserve UI responsiveness
+        }
     }
+    
+    // Operation throttling to prevent concurrent overload
+    private val isProcessing = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
@@ -41,11 +51,50 @@ class LocalLlmPlugin :
             }
         }
     }
+    
+    /**
+     * Execute operation with throttling to prevent concurrent overload
+     */
+    private fun executeWithThrottling(operation: () -> Unit): Boolean {
+        return if (isProcessing.compareAndSet(false, true)) {
+            executorService.execute {
+                try {
+                    operation()
+                } catch (e: Exception) {
+                    android.util.Log.e("LocalLlmPlugin", "Error in throttled operation: ${e.message}")
+                } finally {
+                    isProcessing.set(false)
+                }
+            }
+            true
+        } else {
+            android.util.Log.w("LocalLlmPlugin", "Operation skipped - already processing")
+            false
+        }
+    }
+    
+    /**
+     * Enhanced cleanup with proper resource management
+     */
+    private fun cleanupExecutor() {
+        try {
+            android.util.Log.d("LocalLlmPlugin", "Cleaning up executor service...")
+            executorService.shutdown()
+            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                android.util.Log.w("LocalLlmPlugin", "Executor shutdown timeout, forcing shutdown")
+                executorService.shutdownNow()
+            }
+            android.util.Log.d("LocalLlmPlugin", "Executor cleanup completed")
+        } catch (e: InterruptedException) {
+            android.util.Log.e("LocalLlmPlugin", "Interrupted during executor cleanup", e)
+            executorService.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
+    }
 
     private external fun loadModel(filename: String): Boolean
     private external fun freeModel()
     private external fun generateResponse(prompt: String): String
-    private external fun generateResponseStreaming(prompt: String, maxTokens: Int)
     private external fun getPlatformVersion(): String
     
     // Streaming callback methods - MUST be called from main thread
@@ -103,34 +152,37 @@ class LocalLlmPlugin :
             "loadModel" -> {
                 val modelPath = call.argument<String>("modelPath")
                 if (modelPath != null) {
-                    android.util.Log.d("LocalLlmPlugin", "Loading model from: $modelPath on background thread")
-                    // Move to background thread to prevent blocking main thread
-                    executorService.execute {
+                    android.util.Log.d("LocalLlmPlugin", "Loading model from: $modelPath with optimized threading")
+                    
+                    // Return immediately to keep UI responsive
+                    result.success("Model loading started for $modelPath")
+                    
+                    // Use throttled execution to prevent concurrent operations
+                    executeWithThrottling {
                         try {
+                            android.util.Log.d("LocalLlmPlugin", "Starting model load on optimized thread")
                             val success = loadModel(modelPath)
                             // Post result back to main thread
                             mainHandler.post {
                                 android.util.Log.d("LocalLlmPlugin", "Load model result: $success")
                                 if (success) {
-                                    result.success("Model loaded successfully from $modelPath")
+                                    channel.invokeMethod("model_loaded", "Model loaded successfully from $modelPath")
                                 } else {
-                                    result.error("LOAD_FAILED", "Failed to load model from $modelPath", null)
+                                    channel.invokeMethod("model_load_error", "Failed to load model from $modelPath")
                                 }
                             }
                         } catch (e: UnsatisfiedLinkError) {
                             mainHandler.post {
                                 android.util.Log.e("LocalLlmPlugin", "UnsatisfiedLinkError: ${e.message}")
-                                result.error("LINK_ERROR", "Native library not loaded: ${e.message}", null)
+                                channel.invokeMethod("model_load_error", "Native library not loaded: ${e.message}")
                             }
                         } catch (e: Exception) {
                             mainHandler.post {
                                 android.util.Log.e("LocalLlmPlugin", "Exception loading model: ${e.message}")
-                                result.error("LOAD_EXCEPTION", "Exception loading model: ${e.message}", null)
+                                channel.invokeMethod("model_load_error", "Exception loading model: ${e.message}")
                             }
                         }
                     }
-                    // Don't wait for result, return immediately to keep UI responsive
-                    return
                 } else {
                     result.error("INVALID_ARGUMENT", "modelPath is null", null)
                 }
@@ -138,10 +190,15 @@ class LocalLlmPlugin :
             "generateResponse" -> {
                 val prompt = call.argument<String>("prompt")
                 if (prompt != null) {
-                    android.util.Log.d("LocalLlmPlugin", "About to call native generateResponse for prompt: \"$prompt\" on background thread")
-                    // Move to background thread to prevent blocking main thread
-                    executorService.execute {
+                    android.util.Log.d("LocalLlmPlugin", "About to call native generateResponse with optimized threading")
+                    
+                    // Return immediately to keep UI responsive
+                    result.success("Response generation started")
+                    
+                    // Use throttled execution to prevent concurrent operations
+                    executeWithThrottling {
                         try {
+                            android.util.Log.d("LocalLlmPlugin", "Starting response generation on optimized thread")
                             val response = generateResponse(prompt)
                             // Post result back to main thread
                             mainHandler.post {
@@ -160,8 +217,6 @@ class LocalLlmPlugin :
                             }
                         }
                     }
-                    // Don't wait for result, return immediately to keep UI responsive
-                    return
                 } else {
                     result.error("INVALID_ARGUMENT", "prompt is null", null)
                 }
@@ -176,32 +231,31 @@ class LocalLlmPlugin :
             }
             "generateResponseStreaming" -> {
                 val prompt = call.argument<String>("prompt")
-                val maxTokens = call.argument<Int>("maxTokens") ?: 200 // Default to 200 tokens
+                val maxTokens = call.argument<Int>("maxTokens") ?: 200 // Default to 200 tokens (will be overridden by C++)
                 
                 if (prompt != null) {
-                    android.util.Log.d("LocalLlmPlugin", "Starting streaming generation for prompt: \"$prompt\" with maxTokens: $maxTokens on background thread")
+                    android.util.Log.d("LocalLlmPlugin", "Starting Phase 3 C++ classification streaming - TEMPORARILY DISABLING THROTTLING")
                     
                     // Return immediately to keep UI responsive
-                    result.success("Streaming started")
+                    result.success("C++ streaming started")
                     
-                    // Move to background thread to prevent blocking main thread
+                    // TEMPORARY FIX: Execute directly without throttling to test C++ call
                     executorService.execute {
                         try {
-                            // Set the token limit before calling native function
-                            setTokenLimit(maxTokens)
+                            android.util.Log.d("LocalLlmPlugin", "About to call C++ generateResponseStreaming with: \"$prompt\"")
                             
-                            // Call native streaming method with token limit
+                            // Call native streaming method - C++ will classify question and set optimal token limit
                             generateResponseStreaming(prompt, maxTokens)
+                            
+                            android.util.Log.d("LocalLlmPlugin", "C++ generateResponseStreaming call completed")
                         } catch (e: UnsatisfiedLinkError) {
                             mainHandler.post {
                                 android.util.Log.e("LocalLlmPlugin", "UnsatisfiedLinkError in generateResponseStreaming: ${e.message}")
-                                // Send error through EventChannel if streaming was already started
                                 channel.invokeMethod("streaming_error", "Native library not loaded: ${e.message}")
                             }
                         } catch (e: Exception) {
                             mainHandler.post {
                                 android.util.Log.e("LocalLlmPlugin", "Exception in generateResponseStreaming: ${e.message}")
-                                // Send error through EventChannel if streaming was already started
                                 channel.invokeMethod("streaming_error", "Exception in streaming generation: ${e.message}")
                             }
                         }
@@ -222,11 +276,12 @@ class LocalLlmPlugin :
         // Cleanup streaming callbacks
         try {
             cleanupStreamingCallbacks()
+            android.util.Log.d("LocalLlmPlugin", "Streaming callbacks cleaned up")
         } catch (e: UnsatisfiedLinkError) {
             android.util.Log.e("LocalLlmPlugin", "Failed to cleanup streaming callbacks: ${e.message}")
         }
         
-        // Cleanup background executor
-        executorService.shutdown()
+        // Enhanced cleanup with proper resource management
+        cleanupExecutor()
     }
 }

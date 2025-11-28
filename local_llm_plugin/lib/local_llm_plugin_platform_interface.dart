@@ -45,9 +45,9 @@ abstract class LocalLlmPluginPlatform extends PlatformInterface {
   Future<void> generateResponseStreaming(
     String prompt, 
     StreamingCallback onToken,
-    StreamingCompleteCallback onComplete, {
-    int maxTokens = 200, // Smart limit parameter
-  }) {
+    StreamingCompleteCallback onComplete,
+    // PHASE 3: C++ handles classification - no maxTokens parameter needed
+  ) {
     throw UnimplementedError('generateResponseStreaming() has not been implemented.');
   }
 }

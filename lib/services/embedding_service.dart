@@ -3,9 +3,8 @@ import 'dart:math';
 import 'dart:typed_data';
 
 class EmbeddingService {
-  Object? _onnxSession;
   final Map<String, List<double>> _embeddingCache = {};
-  static const int EMBEDDING_DIMENSION = 384; // all-MiniLM-L6-v2 standard
+  static const int embeddingDimension = 384; // all-MiniLM-L6-v2 standard
 
   Future<void> initializeModel() async {
     try {
@@ -34,7 +33,7 @@ class EmbeddingService {
 
   Future<List<double>> getEmbedding(String text) async {
     if (text.isEmpty) {
-      return List.filled(EMBEDDING_DIMENSION, 0.0);
+      return List.filled(embeddingDimension, 0.0);
     }
 
     // Check cache first
@@ -65,7 +64,7 @@ class EmbeddingService {
       
     } catch (e) {
       print('Error generating embedding: $e');
-      return List.filled(EMBEDDING_DIMENSION, 0.0);
+      return List.filled(embeddingDimension, 0.0);
     }
   }
 
@@ -76,7 +75,7 @@ class EmbeddingService {
     final seed = (hash.abs() % 1000000).toDouble();
     
     final embedding = <double>[];
-    for (int i = 0; i < EMBEDDING_DIMENSION; i++) {
+    for (int i = 0; i < embeddingDimension; i++) {
       // Generate pseudo-random but deterministic values
       final value = ((seed * (i + 1) * 0.123456789) % 1.0) * 2.0 - 1.0;
       embedding.add(value);

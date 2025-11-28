@@ -20,14 +20,15 @@ class LocalLlmPlugin {
   Future<void> generateResponseStreaming(
     String prompt, 
     StreamingCallback onToken,
-    StreamingCompleteCallback onComplete, {
-    int maxTokens = 200, // Smart limit parameter
-  }) {
+    StreamingCompleteCallback onComplete,
+    // PHASE 3: C++ handles question classification and smart token limits
+    // No maxTokens parameter - let native handle everything
+  ) {
+    // Direct call to platform implementation
     return LocalLlmPluginPlatform.instance.generateResponseStreaming(
       prompt, 
       onToken, 
       onComplete,
-      maxTokens: maxTokens,
     );
   }
 }

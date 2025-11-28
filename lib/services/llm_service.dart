@@ -2,21 +2,32 @@ import 'package:local_llm_plugin/local_llm_plugin.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart' as path;
 
 typedef StreamingCallback = void Function(String token);
 typedef StreamingCompleteCallback = void Function(String fullResponse);
 
 class LlmService {
-  final LocalLlmPlugin _plugin = LocalLlmPlugin();
+  LocalLlmPlugin _plugin;
   bool _modelLoaded = false;
   String? _loadedModelPath;
   bool _isStreaming = false;
+  bool _isInitializing = false; // CRITICAL FIX: Prevent concurrent initialization
 
-  // Initialize with a default model
+  // Constructor for production use (uses real plugin)
+  LlmService() : _plugin = LocalLlmPlugin();
+
+  // Constructor for testing (injects mock plugin)
+  LlmService.withPlugin(this._plugin);
+
+  // Initialize with a default model - CRITICAL FIX: Prevent multiple concurrent initialization
   Future<void> initialize() async {
+    // Double-check pattern to prevent race conditions
     if (_modelLoaded) return;
-
+    
+    // Use a lock to prevent concurrent initialization
+    if (_isInitializing) return;
+    _isInitializing = true;
+    
     try {
       // Use Gemma instruction-tuned model for better responses
       final modelPath = await _getModelPath('gemma-3-1B-it-QAT-Q4_0.gguf');
@@ -36,6 +47,8 @@ class LlmService {
       }
     } catch (e) {
       print('Failed to initialize LLM: $e');
+    } finally {
+      _isInitializing = false;
     }
   }
 
@@ -66,7 +79,9 @@ class LlmService {
 
   Future<String> loadModel(String modelPath) async {
     final result = await _plugin.loadModel(modelPath);
-    if (result.contains('successfully')) {
+    // FIX: Check for "loading started" instead of "successfully" 
+    // since that's what the Kotlin plugin actually returns
+    if (result.contains('loading started') || result.contains('successfully')) {
       _modelLoaded = true;
       _loadedModelPath = modelPath;
     }
@@ -98,9 +113,10 @@ class LlmService {
   Future<void> generateResponseStreaming(
     String prompt,
     StreamingCallback onToken,
-    StreamingCompleteCallback onComplete, {
-    int maxTokens = 200, // Smart limit parameter
-  }) async {
+    StreamingCompleteCallback onComplete,
+    // PHASE 3: C++ handles question classification and token limits
+    // No maxTokens parameter needed - let native handle everything
+  ) async {
     if (!_modelLoaded) {
       await initialize();
       if (!_modelLoaded) {
@@ -117,8 +133,9 @@ class LlmService {
     _isStreaming = true;
     
     try {
-      // Use real streaming implementation with smart token limits
-      await _plugin.generateResponseStreaming(prompt, onToken, onComplete, maxTokens: maxTokens);
+      // PHASE 3: C++ handles question classification and token limits
+      // Direct call to native - no maxTokens parameter needed
+      await _plugin.generateResponseStreaming(prompt, onToken, onComplete);
       
     } catch (e) {
       print('Error in streaming generation: $e');
