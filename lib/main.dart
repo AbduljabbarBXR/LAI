@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:local_ai_app/database/database.dart';
+import 'package:local_ai_app/providers/conversation_provider.dart';
 import 'package:local_ai_app/screens/chat_screen.dart';
 import 'package:local_ai_app/services/embedding_service.dart';
 import 'package:local_ai_app/services/llm_service.dart';
@@ -7,13 +9,43 @@ import 'package:local_ai_app/services/llm_service.dart';
 void main() async {
   try {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // Initialize services
     await embeddingService.initializeModel();
-    await llmService.initialize(); // Initialize LLM service with model loading
-    runApp(const Directionality(textDirection: TextDirection.ltr, child: ProviderScope(child: MyApp())));
+    await llmService.initialize();
+
+    // Initialize database (conversations will be loaded by providers as needed)
+    final database = AppDatabase();
+    await database.getAllConversations(); // Ensure database is ready
+
+    // Start fresh - no conversation pre-selected
+    runApp(const DirectionalProviderScope(
+      child: MyApp(),
+    ));
   } catch (e) {
     // Show user-friendly error screen when initialization fails
     print('App initialization failed: $e');
     runApp(ErrorApp(error: e.toString()));
+  }
+}
+
+// Custom provider scope for consistent text direction
+class DirectionalProviderScope extends StatelessWidget {
+  final Widget child;
+
+  const DirectionalProviderScope({
+    super.key,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.ltr,
+      child: ProviderScope(
+        child: child,
+      ),
+    );
   }
 }
 

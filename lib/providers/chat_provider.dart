@@ -13,12 +13,11 @@ class ChatNotifier extends StateNotifier<List<Message>> {
   final EmbeddingService embeddingService;
   final LlmService llmService;
   final AppDatabase database;
-  String? conversationId;
-  final Ref _ref; // Add reference to access providers
+  final String? conversationId;
 
   bool _isProcessing = false;
 
-  ChatNotifier(this.embeddingService, this.llmService, this.database, this.conversationId, this._ref) : super([]) {
+  ChatNotifier(this.embeddingService, this.llmService, this.database, this.conversationId) : super([]) {
     if (conversationId != null) {
       _loadMessages();
     }
@@ -59,11 +58,12 @@ class ChatNotifier extends StateNotifier<List<Message>> {
   }
 
   Future<void> switchConversation(String? newConversationId) async {
-    conversationId = newConversationId;
-    await _loadMessages();
-    // Call memory_clear to prevent KV cache contamination
+    // Note: conversationId is final and set by provider dependency
+    // This method is mainly for clearing context when switching
     await llmService.clearContext();
   }
+
+
 
   // Add a new message
   void addMessage(Message message) {
@@ -90,17 +90,10 @@ class ChatNotifier extends StateNotifier<List<Message>> {
     state = [...state, userMessage];
     await _saveMessage(userMessage);
 
-    // Set loading state for both global provider and controller
-    _ref.read(isLoadingProvider.notifier).state = true;
+    // Set loading state for controller only (global state managed by widget)
     loadingController?.state = true;
 
     try {
-      // TODO: Restore memory integration once database setup is complete
-      // For now, use minimal context
-
-      // PHASE 3: Let C++ handle question classification and token limits
-      // No need for Flutter-side token limit calculation
-      
       // Clean prompt format to prevent contamination and improve quality
       final prompt = 'User: $content\nAssistant: Respond in plain text without markdown formatting.';
 
@@ -114,20 +107,20 @@ class ChatNotifier extends StateNotifier<List<Message>> {
         timestamp: DateTime.now(),
         source: 'Local',
       );
-      
+
       // Add empty AI message to start streaming
       state = [...state, streamingMessage];
       await _saveMessage(streamingMessage);
 
       // Use streaming response - C++ handles classification
       String accumulatedResponse = '';
-      
+
       await llmService.generateResponseStreaming(
         prompt,
         (String token) {
           // Called for each token as it arrives
           accumulatedResponse += token;
-          
+
           // Update the message with accumulated response
           final updatedMessage = streamingMessage.copyWith(content: accumulatedResponse);
           state = [
@@ -136,10 +129,7 @@ class ChatNotifier extends StateNotifier<List<Message>> {
           ];
         },
         (String fullResponse) {
-          // Called when streaming is complete - RESET LOADING STATE HERE
-          _ref.read(isLoadingProvider.notifier).state = false;
-          loadingController?.state = false;
-          
+          // Called when streaming is complete
           final parts = fullResponse.split('|');
           final mainResponse = parts.isNotEmpty ? parts[0] : fullResponse;
           final aiThoughts = parts.length > 1 && parts[1].isNotEmpty ? parts[1] : null;
@@ -149,22 +139,18 @@ class ChatNotifier extends StateNotifier<List<Message>> {
             content: mainResponse,
             aiThoughts: aiThoughts,
           );
-          
+
           state = [
             ...state.where((msg) => msg.id != aiMessageId),
             finalMessage
           ];
-          
+
           // Save the final message
           _saveMessage(finalMessage);
         },
       );
-      
+
     } catch (e) {
-      // Reset loading state on error
-      _ref.read(isLoadingProvider.notifier).state = false;
-      loadingController?.state = false;
-      
       // Add error message as AI response
       final errorMessage = Message(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -176,7 +162,8 @@ class ChatNotifier extends StateNotifier<List<Message>> {
       );
       state = [...state, errorMessage];
     } finally {
-      // Reset processing flag (loading state is handled by completion callback)
+      // Reset processing flag and loading state
+      loadingController?.state = false;
       _isProcessing = false;
     }
   }
@@ -199,8 +186,8 @@ final chatProvider = StateNotifierProvider<ChatNotifier, List<Message>>((ref) {
   final llmService = ref.watch(llmServiceProvider);
   final database = ref.watch(sharedDatabaseProvider);
   final conversationId = ref.watch(selectedConversationIdProvider);
-  // Use the global embedding service instance and pass ref for global state access
-  return ChatNotifier(embeddingService, llmService, database, conversationId, ref);
+  // Use the global embedding service instance
+  return ChatNotifier(embeddingService, llmService, database, conversationId);
 });
 
 // Provider for the current user input

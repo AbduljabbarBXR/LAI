@@ -97,6 +97,14 @@ class AppDatabase extends _$AppDatabase {
     return into(messages).insert(entry, mode: InsertMode.insertOrReplace);
   }
 
+  Future<int> getMessageCountForConversation(String conversationId) async {
+    final result = await (selectOnly(messages)
+      ..addColumns([messages.id.count()])
+      ..where(messages.conversationId.equals(conversationId)))
+      .getSingle();
+    return result.read(messages.id.count()) ?? 0;
+  }
+
   Future<List<memory_model.Memory>> get allMemories async {
     final rows = await (select(memories)
           ..orderBy([(tbl) => OrderingTerm.desc(tbl.createdAt)]))
@@ -184,4 +192,3 @@ final sharedDatabaseProvider = Provider<AppDatabase>((ref) {
   ref.onDispose(database.close);
   return database;
 });
-

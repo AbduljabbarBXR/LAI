@@ -24,7 +24,7 @@ class ConversationNotifier extends StateNotifier<List<ConversationModel>> {
     )).toList();
   }
 
-  Future<void> createNewConversation({String? title, String? firstMessage}) async {
+  Future<String> createNewConversation({String? title, String? firstMessage}) async {
     final now = DateTime.now();
     final conversationId = now.millisecondsSinceEpoch.toString();
 
@@ -49,6 +49,9 @@ class ConversationNotifier extends StateNotifier<List<ConversationModel>> {
     );
 
     state = [newConversation, ...state];
+    
+    // Return the created conversation ID
+    return conversationId;
   }
 
   Future<void> deleteConversation(String conversationId) async {
